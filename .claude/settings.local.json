@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "WebSearch",
-      "PowerShell(julia *)"
+      "PowerShell(julia *)",
+      "Bash(git -C \"D:/Quant/Option Pricing Pipeline For NVDA\" log --oneline --all)",
+      "Bash(julia *)"
     ]
   }
 }
