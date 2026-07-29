@@ -29,7 +29,7 @@ function fetch_price_history(
         return CSV.read(cache_path, DataFrame)
     end
 
-    range_str = days <= 730 ? "2y" : "5y"
+    range_str = days <= 730 ? "2y" : days <= 1825 ? "5y" : "10y"
     url = "https://query1.finance.yahoo.com/v8/finance/chart/$symbol" *
         "?range=$range_str&interval=1d"
 
