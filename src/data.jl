@@ -8,17 +8,6 @@ using Dates
 
 export fetch_price_history
 
-"""
-    fetch_price_history(symbol; days=730, cache_path="data/prices.csv", force_refresh=false)
-
-Get daily close prices for `symbol` as a DataFrame with columns `:date` and `:close`.
-
-Reads Yahoo Finance's public chart endpoint for daily history over the requested
-`days` window. No API key required.
-
-Caches results to `cache_path` as CSV. On subsequent calls, loads from the cache
-instead of hitting the API again, unless `force_refresh=true`.
-"""
 function fetch_price_history(
     symbol::String;
     days::Int=730,
@@ -33,7 +22,7 @@ function fetch_price_history(
     url = "https://query1.finance.yahoo.com/v8/finance/chart/$symbol" *
         "?range=$range_str&interval=1d"
 
-    response = HTTP.get(url, ["User-Agent" => "Mozilla/5.0"])
+    response = HTTP.get(url, ["User-Agent" => "Mozilla/5.0"]) #this line masks the traffic as mozilla firefox 
     body = JSON3.read(response.body)
 
     result = body.chart.result
@@ -44,14 +33,14 @@ function fetch_price_history(
     r = result[1]
     timestamps = r.timestamp
     closes = r.indicators.quote[1].close
-
+    #body.chart.result[1].indicators.quote[1].close is simply yahoo's nesting to reach the actual price array
     close_vals = [c === nothing ? missing : Float64(c) for c in closes]
 
     df = DataFrame(
         date=Date.(unix2datetime.(timestamps)),
         close=close_vals,
     )
-    dropmissing!(df)
+    dropmissing!(df) #simply removes the rows that are null
     sort!(df, :date)
 
     cutoff = Dates.today() - Day(days)
