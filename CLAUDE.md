@@ -6,16 +6,20 @@ Project instructions for Claude Code. Read before making changes.
 
 This project was deliberately cut down on 2026-08-24. It had grown into a 13-phase plan
 ending in a published paper; almost none of it was built, and the size of the plan was the
-main thing stopping progress. What follows is the reduced version. **Do not re-expand it.**
+main thing stopping progress. What follows is the reduced version.
 
-**The project is now:** does GARCH(1,1) beat EWMA at forecasting NVDA's 21-day-ahead
-realized variance, out-of-sample, under walk-forward evaluation?
+On 2026-09-12 the author re-expanded it by exactly one model: gradient-boosted trees. That
+was an explicit decision, not drift. **It is the only re-expansion.** Everything under
+"Parked" below stays parked, and the next addition needs the same explicit call.
 
-Two models. One dataset. One honest answer.
+**The project is now:** can GARCH(1,1) or a gradient-boosted tree beat EWMA at forecasting
+NVDA's 21-day-ahead realized variance, out-of-sample, under walk-forward evaluation?
+
+Three models. One dataset. One honest answer.
 
 ### Done looks like this
 
-- [ ] A results table: EWMA vs GARCH, scored on QLIKE and MSE, out-of-sample
+- [ ] A results table: EWMA vs GARCH vs GBT, scored on QLIKE and MSE, out-of-sample
 - [ ] One chart: forecast vs realized variance over the test period
 - [ ] A README stating the question, the method, the answer, and the limitations
 - [ ] `checks.jl` green, and a fresh clone reproduces every number from the committed CSV
@@ -29,8 +33,8 @@ further ambition starts as a new decision, not as a continuation.
 The full research plan lives in `README.md` (Phases 0–12). It is **out of scope** and stays
 untouched until the five boxes above are done. Specifically out of scope right now:
 
-- Gradient-boosted trees / `EvoTrees.jl`
-- HAR (Corsi 2009)
+- HAR (Corsi 2009) as a *fitted model*. Multi-horizon trailing RV (5/21/63) appears as GBT
+  *features*; that is not a HAR regression, and none gets estimated or scored.
 - Any ticker other than NVDA
 - The SSRN working paper, literature review, and regime/robustness sections
 - Transaction-cost overlays
@@ -49,6 +53,8 @@ src/black_scholes.jl    BlackScholes: bs_d1_d2, bs_call_price
 src/realized_vol.jl     RealizedVol: forward (target) and trailing (feature) RV
 src/ewma.jl             EWMA: RiskMetrics lambda=0.94 variance path, h-step rule
 src/garch.jl            Garch: GARCH(1,1) by hand-coded MLE, h-step forecast
+src/loss.jl             Loss: qlike, mse, mean_loss
+src/walk_forward.jl     WalkForward: expanding-window splits + per-window refit loop
 data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 -> 2026-07-16
 ```
 
@@ -115,7 +121,7 @@ the identical environment. Any dependency bump is a reviewable event with its ow
   celebrate.** Both real bugs found so far (full-sample `h0` seeding, and the GARCH/EWMA
   off-by-one) made the results look *better*. Leakage never hurts your numbers.
 
-## The two models
+## The three models
 
 - **EWMA** — the baseline. RiskMetrics λ = 0.94 for daily data. In precisely because it has
   no fitted parameters, is a few lines of code, and is genuinely hard to beat. λ is a
@@ -124,6 +130,17 @@ the identical environment. Any dependency bump is a reviewable event with its ow
   biggest gap (time-series). Written by hand — likelihood, optimizer setup, robust standard
   errors — and cross-checked against `ARCHModels.jl`. "I called a library" and "I derived
   and fitted the likelihood" are different interview answers.
+- **Gradient-boosted trees** (`EvoTrees.jl`) — the nonlinear challenger, added 2026-09-12.
+  The learning here is feature construction and leak-free target alignment, not tree
+  boosting internals, so the library supplies the fitting. It earns its place only if it
+  beats EWMA on QLIKE under the identical harness.
+
+**GBT feature constraint — read before designing features.** `data/prices_10y.csv` is
+close-only, and re-pulling data is blocked (see Layout). So GBT sees nothing EWMA and GARCH
+do not: no high-low range, no volume, no order flow. Features are close-derived only —
+trailing RV at several windows, lagged returns, and optionally the EWMA/GARCH forecasts
+themselves. That is a defensible setup, but it caps what GBT can plausibly add, and the
+README must say so rather than dressing up a null result as a surprise.
 
 ## Evaluation design
 
@@ -145,8 +162,9 @@ finding, not a failure.
 
 ## State
 
-All of the below is committed on `main` — `volatility-forecasting` was merged via PR #1 on
-2026-08-31. Nothing in the repo is untracked.
+Current branch is `loss-function`, one commit (`cf7d521`) ahead of `main` and not yet
+merged. Everything below the first group is on that branch, not on `main`. Nothing in the
+repo is untracked.
 
 Built and verified:
 - BS v0 pipeline
@@ -157,9 +175,15 @@ Built and verified:
   t-stats on α and β)
 - `h0_window` walk-forward-safe seeding, and the `ConditionalVariance` / `OneStepForecast`
   timing types
-- 14 checks (a–n) passing, ~54s cold
+- `loss.jl` — QLIKE, MSE, `mean_loss`; checks (o)(p)(q)
+- `walk_forward.jl` — expanding-window splits with the 21-day embargo, per-window GARCH
+  refit under `h0_window=train_end`, convergence logged, forecasts written to `results/`;
+  checks (r)(s)
+- 19 checks (a–s) passing, ~30s
 
-Not built: the loss functions, the walk-forward harness, the results table, the chart.
+Not built: the results table, the chart, Diebold-Mariano, and the whole GBT strand.
+`main.jl` is still the v0 Black-Scholes script — it does not call `walk_forward`, so the
+harness has never run on real NVDA data, only on the 30 synthetic points inside check (s).
 
 `git status` is the authority on what is actually committed — check it before assuming a
 module is safe.
@@ -169,19 +193,22 @@ module is safe.
 1. ~~**Commit `src/garch.jl` + `checks.jl` + this file.**~~ Done — merged to `main` in PR #1
    on 2026-08-31. The author has not yet read through `garch.jl`; do not add to or extend
    that module until they have.
-2. **`src/loss.jl`** — QLIKE and MSE, with hand-verifiable cases in `checks.jl`.
-3. **`src/walkforward.jl`** — rolling loop, 21-day embargo, per-window GARCH refit with
-   `h0_window`, forecasts persisted to disk. Everything is blocked on this.
-4. **Run it.** Produce the results table and the forecast-vs-realized chart.
-5. **Diebold-Mariano with HAC**, then rewrite `README.md` around the actual answer and merge.
+2. ~~**`src/loss.jl`**~~ — done on `loss-function`, checks (o)(p)(q).
+3. ~~**`src/walk_forward.jl`**~~ — done on `loss-function`, checks (r)(s).
+4. **Run it on real data.** Two models first: results table + forecast-vs-realized chart for
+   EWMA vs GARCH. This is the baseline GBT gets judged against, so it comes first.
+5. **GBT as a third model** — features, then into the same harness, then rescored.
+6. **Diebold-Mariano with HAC**, then rewrite `README.md` around the actual answer and merge.
 
 One module at a time, stopping after each.
 
 ## Open decisions — do not silently pick these
 
-Scoping down removed most of these. Three remain, and they are the author's calls:
+Scoping down removed most of these. Two remain, and they are the author's calls:
 
-1. **Expanding vs rolling training window** in the walk-forward harness.
+1. ~~**Expanding vs rolling training window.**~~ Resolved 2026-09-12: **expanding**. Training
+   always starts at index 1. This matches what `walk_forward` already did; the decision is
+   now recorded rather than implicit. It applies to GBT too.
 2. **What to do when a GARCH window fails to converge** — drop the window, carry the previous
    fit forward, or exclude the day.
 3. **Variance vs volatility units for scoring.** The code and the convention above say
@@ -195,7 +222,9 @@ The point of this project is understanding the estimator.
 - **By hand:** EWMA; the GARCH likelihood, its optimization and its standard errors; the
   walk-forward split; the loss functions; the Diebold-Mariano statistic.
 - **Library or agent-written is fine:** plotting, CSV parsing, HTTP, `Project.toml`, README
-  plumbing. `Optim.jl` supplies only the search, not the likelihood.
+  plumbing. `Optim.jl` supplies only the search, not the likelihood. `EvoTrees.jl` supplies
+  the boosting — the hand-built part of the GBT strand is the feature matrix and its
+  alignment, which is where the leaks live.
 
 When a library would hide the thing being learned, say so and write it out instead.
 
