@@ -1,8 +1,6 @@
 module EWMA
 
-#takes small parts of the main module and exports them in the code
 export ewma_variance_path, ewma_hstep_variance
-#TRYNA UNDERSTAND EXPORT
 function ewma_variance_path(
     returns::AbstractVector{<:Real};
     lambda::Float64=0.94,

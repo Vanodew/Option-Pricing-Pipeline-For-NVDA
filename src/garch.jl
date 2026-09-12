@@ -10,6 +10,7 @@ export GARCH11Params, GARCH11Fit, VarianceSeries, ConditionalVariance, OneStepFo
        garch11_forecast_path, garch11_hstep_variance,
        unconditional_variance, persistence
 
+#making a struct for all the parameteres of garch
 struct GARCH11Params
     omega::Float64
     alpha::Float64
@@ -17,8 +18,13 @@ struct GARCH11Params
     mu::Float64
 end
 
+# adding the alpha + beta = persistence
+#persistence tells us a number that tells you how long shocks to volatility "linger" before 
+#fading out
 persistence(p::GARCH11Params) = p.alpha + p.beta
 
+#long-run average variance the model settles toward if you let it run 
+#forever with no new shocks
 unconditional_variance(p::GARCH11Params) = p.omega / (1.0 - p.alpha - p.beta)
 
 # =============================================================================
@@ -27,7 +33,8 @@ unconditional_variance(p::GARCH11Params) = p.omega / (1.0 - p.alpha - p.beta)
 
 struct VarianceSeries{A,T<:Real}
     values::Vector{T}
-
+#this function simply stores all the values of the vector in a new vector which has done
+#the variance series calculation for garch
     function VarianceSeries{A,T}(values::Vector{T}) where {A,T<:Real}
         A === :conditional || A === :forecast ||
             error("Unknown timing tag :$A (expected :conditional or :forecast).")
@@ -36,13 +43,13 @@ struct VarianceSeries{A,T<:Real}
 end
 
 VarianceSeries{A}(values::Vector{T}) where {A,T<:Real} = VarianceSeries{A,T}(values)
-
+#confused about line 45 and 47
 const ConditionalVariance = VarianceSeries{:conditional}
 
 const OneStepForecast = VarianceSeries{:forecast}
-
+#storing the values of our variance again in variance?
 variances(s::VarianceSeries) = s.values
-
+#what is line 51
 timing(::VarianceSeries{A}) where {A} = A
 
 Base.length(s::VarianceSeries) = length(s.values)
@@ -52,6 +59,8 @@ Base.lastindex(s::VarianceSeries) = lastindex(s.values)
 Base.eachindex(s::VarianceSeries) = eachindex(s.values)
 Base.iterate(s::VarianceSeries, st...) = iterate(s.values, st...)
 Base.eltype(::VarianceSeries{A,T}) where {A,T} = T
+
+#assigining the constant values for the conditional, and forecast variance
 
 const _TIMING_DOC = Dict(
     :conditional => "h_t, known at t-1",
@@ -72,15 +81,21 @@ _bare() = ArgumentError(
     "known to be right, or wrap the vector in ConditionalVariance/OneStepForecast."
 )
 
+#function below tells us if both variance series equal if not throw if yes proceed.
+
 function Base.:(==)(a::VarianceSeries{A}, b::VarianceSeries{B}) where {A,B}
     A === B || throw(_mismatch(A, B))
     return a.values == b.values
 end
 
+#same as above but instead its about if its roughly equal not exactly equal.
+
 function Base.isapprox(a::VarianceSeries{A}, b::VarianceSeries{B}; kw...) where {A,B}
     A === B || throw(_mismatch(A, B))
     return isapprox(a.values, b.values; kw...)
 end
+
+#
 
 Base.:(==)(::VarianceSeries, ::AbstractVector) = throw(_bare())
 Base.:(==)(::AbstractVector, ::VarianceSeries) = throw(_bare())
@@ -120,6 +135,8 @@ end
 
 # Internal, generic in the parameter type so ForwardDiff duals pass through
 # during the BFGS polish. Returns a bare vector; the public wrapper tags it.
+
+#calculates local variance path
 function _variance_path(returns::AbstractVector{<:Real}, omega::Real, alpha::Real,
                         beta::Real, mu::Real, seed::Real)
     n = length(returns)
@@ -133,6 +150,8 @@ function _variance_path(returns::AbstractVector{<:Real}, omega::Real, alpha::Rea
     end
     return h
 end
+
+#calculates global variance path
 
 function garch11_variance_path(
     returns::AbstractVector{<:Real}, omega::Real, alpha::Real, beta::Real;
@@ -148,6 +167,7 @@ function garch11_variance_path(
 end
 
 # Internal: per-observation log-likelihood contributions, generic in T.
+#in essence 
 function _logliks(returns::AbstractVector{<:Real}, omega::Real, alpha::Real,
                   beta::Real, mu::Real, seed::Real)
     h = _variance_path(returns, omega, alpha, beta, mu, seed)
@@ -164,6 +184,8 @@ function _logliks(returns::AbstractVector{<:Real}, omega::Real, alpha::Real,
     end
     return out
 end
+
+# 
 
 function garch11_logliks(
     returns::AbstractVector{<:Real}, omega::Real, alpha::Real, beta::Real;

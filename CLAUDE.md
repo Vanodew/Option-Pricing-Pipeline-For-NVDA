@@ -145,8 +145,11 @@ finding, not a failure.
 
 ## State
 
+All of the below is committed on `main` — `volatility-forecasting` was merged via PR #1 on
+2026-08-31. Nothing in the repo is untracked.
+
 Built and verified:
-- BS v0 pipeline (on `main`)
+- BS v0 pipeline
 - `realized_vol.jl` — forward/trailing RV, with the leakage probe
 - `ewma.jl` — RiskMetrics EWMA baseline
 - `garch.jl` — GARCH(1,1) by hand-coded MLE; matches `ARCHModels.jl` to ~7 s.f. on ω, β, α,
@@ -163,8 +166,9 @@ module is safe.
 
 ## Build order
 
-1. **Commit `src/garch.jl` + `checks.jl` + this file.** Currently untracked; it is the
-   best-verified work in the repo and exists in one place only.
+1. ~~**Commit `src/garch.jl` + `checks.jl` + this file.**~~ Done — merged to `main` in PR #1
+   on 2026-08-31. The author has not yet read through `garch.jl`; do not add to or extend
+   that module until they have.
 2. **`src/loss.jl`** — QLIKE and MSE, with hand-verifiable cases in `checks.jl`.
 3. **`src/walkforward.jl`** — rolling loop, 21-day embargo, per-window GARCH refit with
    `h0_window`, forecasts persisted to disk. Everything is blocked on this.
@@ -216,9 +220,12 @@ When a library would hide the thing being learned, say so and write it out inste
 
 ## Branch and commit rules
 
-Work happens on `volatility-forecasting`. **Nothing is committed until the author reviews
-it**, and **do not merge to `main` until the author confirms they understand every module on
-the branch** — their explicit rule.
+`volatility-forecasting` is merged and `main` is the current branch. Open a fresh branch for
+the next module rather than committing research code straight to `main`. **Nothing is
+committed until the author reviews it**, and **do not merge to `main` until the author
+confirms they understand every module on the branch** — their explicit rule. The PR #1 merge
+landed `garch.jl` on `main` ahead of that walkthrough, so the review debt on it is real and
+outstanding, not waived.
 
 The merge is step 5 of the build order and is the finish line, not an afterthought. On merge
 `README.md` gets rewritten around the actual result, replacing both the stale v0 text ("no

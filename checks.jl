@@ -7,16 +7,20 @@ include("src/black_scholes.jl")
 include("src/realized_vol.jl")
 include("src/ewma.jl")
 include("src/garch.jl")
+include("src/loss.jl")
+include("src/walk_forward.jl")
 
 using .Volatility
 using .BlackScholes
 using .RealizedVol
 using .EWMA
 using .Garch
+using .Loss
+using .WalkForward
 using Statistics
 using Random: MersenneTwister, randn
 using CSV: File
-using DataFrames: DataFrame
+using DataFrames: DataFrame, nrow
 import ARCHModels
 
 approx(a, b; tol=1e-4) = abs(a - b) <= tol
@@ -350,6 +354,147 @@ let
     println("(n) GARCH vs ARCHModels  OK  omega=$(round(mine.omega, sigdigits=6)), alpha=$(round(mine.alpha, digits=6)), beta=$(round(mine.beta, digits=6)) vs library $(round(lib[1], sigdigits=6)), $(round(lib[3], digits=6)), $(round(lib[2], digits=6))")
     println("                             logL $(round(f.loglik, digits=6)) vs $(round(lib_ll, digits=6)); persistence $(round(mine.alpha + mine.beta, digits=4))")
     println("                             robust se alpha $(round(f.se.alpha, sigdigits=6)) vs $(round(libse[3], sigdigits=6)); t=$(round(f.tstat.alpha, digits=2)) (naive Hessian se would be $(round(ratio, digits=2))x smaller)")
+end
+
+# --- (o) QLIKE: zero at a perfect forecast, asymmetric off it ---------------------
+# x = RV/F. qlike(x) = x - ln(x) - 1, which is exactly 0 at x=1 (log(1)=0).
+# Under-forecasting (F=1, RV=2 -> x=2) and over-forecasting by the same factor
+# (F=2, RV=1 -> x=0.5) are NOT symmetric:
+#   qlike(2,1): x=2   -> 2 - ln(2) - 1   = 1 - ln(2)   ~= 0.306853
+#   qlike(1,2): x=0.5 -> 0.5 - ln(0.5) - 1 = ln(2) - 0.5 ~= 0.193147
+# Under-forecasting costs more -- that asymmetry is the reason to use QLIKE
+# over MSE here, not a side detail.
+let
+    @assert qlike(0.0004, 0.0004) == 0.0
+    @assert approx(qlike(2.0, 1.0), 1 - log(2); tol=1e-12)
+    @assert approx(qlike(1.0, 2.0), log(2) - 0.5; tol=1e-12)
+    @assert qlike(2.0, 1.0) > qlike(1.0, 2.0)
+
+    # A non-positive forecast variance is a bug upstream, not something to
+    # divide by or take the log of.
+    @assert throws(() -> qlike(1.0, 0.0))
+    @assert throws(() -> qlike(1.0, -1.0))
+
+    println("(o) qlike                OK  qlike(F,F)=0 exactly; under-forecast qlike(2,1)=$(round(qlike(2.0,1.0), digits=6)) > over-forecast qlike(1,2)=$(round(qlike(1.0,2.0), digits=6)); forecast<=0 throws")
+end
+
+# --- (p) MSE: symmetric squared error ----------------------------------------------
+# (5-3)^2 = 4 and (3-5)^2 = 4 -- unlike QLIKE, MSE does not care which side the
+# error falls on.
+let
+    @assert mse(5.0, 3.0) == 4.0
+    @assert mse(3.0, 5.0) == 4.0
+    @assert mse(0.0004, 0.0004) == 0.0
+    println("(p) mse                  OK  mse(5,3)=mse(3,5)=4.0; symmetric, unlike qlike")
+end
+
+# --- (q) mean_loss skips any pair with a missing side ------------------------------
+# realized/forecasts each carry one missing entry, in DIFFERENT positions, the
+# way a real walk-forward column will (RV missing at the series tail, forecast
+# missing where GARCH failed to converge). Only day 1 has both sides present:
+# mse(4,2) = 4. Days 2 and 3 must be dropped, not treated as 0 or errored on.
+let
+    realized  = [4.0, missing, 9.0]
+    forecasts = [2.0, 5.0, missing]
+    @assert mean_loss(realized, forecasts, mse) == 4.0
+
+    # mean_loss doesn't know which loss it's aggregating -- the same
+    # skip-logic must work with qlike passed in instead.
+    realized2  = [1.0, missing]
+    forecasts2 = [1.0, 2.0]
+    @assert mean_loss(realized2, forecasts2, qlike) == 0.0
+
+    println("(q) mean_loss            OK  mismatched missing positions both drop out; mse case -> 4.0; generic over qlike too")
+end
+
+# --- (r) walkforward_splits: embargo and boundary arithmetic, by hand -------------
+# n=20, min_train=8, test_size=4, h=3. train_end starts at 8 and steps by
+# test_size; each test window starts h+1 days after train_end (the embargo)
+# and is capped at test_size days or the end of the sample, whichever is
+# smaller:
+#   train_end=8  -> test_start=8+3+1=12,  test_end=min(15,20)=15 -> (8,  12:15)
+#   train_end=12 -> test_start=16,        test_end=min(19,20)=19 -> (12, 16:19)
+#   train_end=16 -> test_start=20,        test_end=min(23,20)=20 -> (16, 20:20)
+#   train_end=20 -> 20+3=23 is not < 20 -> stop. 3 splits.
+# A second run with n=18 (same everything else) exercises the min(...,n) cap
+# on the LAST window instead of stopping cleanly: the second window would
+# want to run to day 19 but there are only 18 days, so it's truncated to
+# 16:18 (3 days, not the full test_size=4), and there is no third window
+# because train_end=16 fails 16+3=19 < 18.
+let
+    s = walkforward_splits(20, 8, 4, 3)
+    @assert length(s) == 3
+    @assert s[1].train_end == 8  && s[1].test_range == 12:15
+    @assert s[2].train_end == 12 && s[2].test_range == 16:19
+    @assert s[3].train_end == 16 && s[3].test_range == 20:20
+
+    # Expanding: train_end grows by test_size every step, never resets.
+    @assert s[2].train_end - s[1].train_end == 4
+    @assert s[3].train_end - s[2].train_end == 4
+
+    # Every window's test window starts exactly h days after train_end ends,
+    # and consecutive test windows are contiguous -- no day is scored twice,
+    # no day is skipped, and the days train_end+1..train_end+h are never
+    # tested by this window (that's the embargo).
+    for sp in s
+        @assert first(sp.test_range) == sp.train_end + 3 + 1
+    end
+    @assert last(s[1].test_range) + 1 == first(s[2].test_range)
+    @assert last(s[2].test_range) + 1 == first(s[3].test_range)
+
+    s_capped = walkforward_splits(18, 8, 4, 3)
+    @assert length(s_capped) == 2
+    @assert s_capped[2].test_range == 16:18   # capped to n=18, not 16:19
+    @assert length(s_capped[2].test_range) == 3
+
+    println("(r) walkforward_splits   OK  n=20 -> 3 splits, embargo=h and contiguous test windows hold by hand; n=18 caps the last window to 16:18")
+end
+
+# --- (s) walk_forward: wiring, not re-deriving GARCH/EWMA's own numbers -----------
+# GARCH's numbers are already checked in (h)-(n) and EWMA's in (f)-(g). What
+# is NOT yet checked is whether walk_forward hands back the RIGHT numbers for
+# the RIGHT day: does results.realized[row] for day t actually equal
+# forward_realized_variance(r,h)[t] computed independently, does
+# results.ewma_1step do the same against ewma_variance_path, does the
+# (window,day) bookkeeping match the split's test_range exactly, and does a
+# missing garch_1step line up exactly with converged==false and nothing
+# else. That's a wiring/indexing check, not a numerical-correctness one --
+# cross-referencing against the already-verified primitives is the right
+# tool here, same idea as check (i) cross-checking GARCH against EWMA.
+let
+    r = [0.01 * sin(0.7t) + 0.002 for t in 1:30]
+    min_train, test_size, h = 15, 5, 3
+
+    out = walk_forward(r; min_train=min_train, test_size=test_size, h=h)
+    splits = walkforward_splits(30, min_train, test_size, h)
+
+    expected_rows = sum(length(sp.test_range) for sp in splits)
+    @assert nrow(out) == expected_rows
+
+    realized_ref = forward_realized_variance(r, h)
+    ewma_ref = ewma_variance_path(r; lambda=0.94)
+
+    row = 1
+    for (window_id, sp) in enumerate(splits)
+        for day in sp.test_range
+            @assert out.window[row] == window_id
+            @assert out.day[row] == day
+            @assert isequal(out.realized[row], realized_ref[day])
+            @assert out.ewma_1step[row] == ewma_ref[day]
+            @assert out.ewma_hstep[row] == ewma_hstep_variance(ewma_ref[day], h)
+            row += 1
+        end
+    end
+
+    # A window's GARCH columns are missing exactly when that window's fit
+    # did not converge -- never missing on a converged window, never present
+    # on a failed one.
+    @assert all(out.converged .== .!ismissing.(out.garch_1step))
+    @assert all(out.converged .== .!ismissing.(out.garch_hstep))
+    @assert all(ismissing(out.garch_1step[i]) == ismissing(out.garch_hstep[i]) for i in 1:nrow(out))
+
+    n_failed = length(splits) - length(unique(out.window[out.converged]))
+    println("(s) walk_forward         OK  $(nrow(out)) rows match $(expected_rows) expected from the splits; realized/ewma columns match the independently-computed reference at every (window,day); $(n_failed)/$(length(splits)) windows failed to converge and their garch columns are missing, nothing else")
 end
 
 println("\nAll sanity checks passed.")
