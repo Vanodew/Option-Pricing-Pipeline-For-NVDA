@@ -6,8 +6,19 @@ using CSV
 using ..Garch
 using ..EWMA
 using ..RealizedVol
+using ..Features
+using EvoTrees
 
 export walkforward_splits, walk_forward
+
+# Fixed in advance, never tuned against the test period.
+const GBT_NROUNDS = 200
+const GBT_ETA = 0.05
+const GBT_MAX_DEPTH = 4
+const GBT_ROWSAMPLE = 0.8
+const GBT_COLSAMPLE = 0.8
+const GBT_SEED = 1234
+const GBT_MIN_TRAIN_ROWS = 100
 
 function walkforward_splits(
     n::Int,
@@ -45,6 +56,7 @@ function walk_forward(
     test_size::Int,
     h::Int = 21,
     lambda::Float64 = 0.94,
+    feature_windows = (5, 21, 63),
     output_path::Union{Nothing,AbstractString} = nothing,
 )
 
@@ -64,6 +76,10 @@ function walk_forward(
         lambda = lambda
     )
 
+    # Causal row by row -- check (w) -- so building once over the sample is safe.
+    gbt_ok = n >= maximum(feature_windows)
+    feats = gbt_ok ? build_features(returns; lambda=lambda, windows=feature_windows) : nothing
+
     results = DataFrame(
         window = Int[],
         day = Int[],
@@ -76,10 +92,12 @@ function walk_forward(
         alpha = Union{Missing, Float64}[],
         beta = Union{Missing, Float64}[],
         mu = Union{Missing, Float64}[],
-        converged = Bool[]
+        converged = Bool[],
+        gbt_hstep = Union{Missing, Float64}[]
     )
 
     garch_failed_windows = 0
+    gbt_skipped_windows = 0
 
     for (window_id, split) in enumerate(splits)
 
@@ -107,6 +125,41 @@ function walk_forward(
             fit.params;
             h0_window = train_end
         )) : nothing
+
+        # Trains on log(target); exp() brings it back, which biases predictions
+        # low. Left uncorrected -- the README reports the bias.
+        gbt_pred = Dict{Int,Float64}()
+        if gbt_ok
+            train_rows = [t for t in 1:train_end
+                          if feats.valid[t] && !ismissing(realized[t]) && realized[t] > 0]
+
+            if length(train_rows) >= GBT_MIN_TRAIN_ROWS
+                cfg = EvoTreeRegressor(
+                    nrounds = GBT_NROUNDS,
+                    eta = GBT_ETA,
+                    max_depth = GBT_MAX_DEPTH,
+                    rowsample = GBT_ROWSAMPLE,
+                    colsample = GBT_COLSAMPLE,
+                    seed = GBT_SEED,
+                )
+                model = EvoTrees.fit(
+                    cfg;
+                    x_train = feats.X[train_rows, :],
+                    y_train = [log(Float64(realized[t])) for t in train_rows],
+                )
+
+                pred_rows = [t for t in test_range if feats.valid[t]]
+                if !isempty(pred_rows)
+                    p = Float64.(model(feats.X[pred_rows, :]))
+                    for (i, t) in enumerate(pred_rows)
+                        gbt_pred[t] = exp(p[i])
+                    end
+                end
+            else
+                gbt_skipped_windows += 1
+                println("  GBT skipped: only $(length(train_rows)) usable training rows")
+            end
+        end
 
         for day in test_range
 
@@ -143,7 +196,8 @@ function walk_forward(
                     fit.params.alpha,
                     fit.params.beta,
                     fit.params.mu,
-                    fit.converged
+                    fit.converged,
+                    get(gbt_pred, day, missing)
                 )
             )
         end
@@ -153,6 +207,8 @@ function walk_forward(
     println("Walk-forward complete.")
     println("Windows attempted: $(length(splits))")
     println("Windows where GARCH failed to converge: $garch_failed_windows")
+    println("Windows where GBT was skipped: $gbt_skipped_windows" *
+            (gbt_ok ? "" : " (sample shorter than the longest feature window)"))
     println("Rows generated: $(nrow(results))")
 
     if output_path !== nothing
