@@ -8,6 +8,7 @@ include("src/realized_vol.jl")
 include("src/ewma.jl")
 include("src/garch.jl")
 include("src/loss.jl")
+include("src/features.jl")
 include("src/walk_forward.jl")
 include("src/dm.jl")
 
@@ -19,6 +20,7 @@ using .Garch
 using .Loss
 using .WalkForward
 using .DieboldMariano
+using .Features
 using Statistics
 using Random: MersenneTwister, randn
 using CSV: File
@@ -600,6 +602,75 @@ let
     @assert throws(() -> dm_test([1.0, 2.0], [1.0]))
 
     println("(v) dm_test conventions  OK  a vs itself -> stat 0, p 1 (not NaN); swapping args flips the sign only; positive stat = first model worse; missing pairs drop out and match the pre-filtered series")
+end
+
+# --- (w) GBT features: values by hand, and no look-ahead --------------------------
+# r = [0.1,0.2,0.3,0.4,0.5], windows (2,3,4):
+#   trv_2[2] = 0.01+0.04 = 0.05          trv_2[5] = 0.16+0.25 = 0.41
+#   trv_3[3] = 0.01+0.04+0.09 = 0.14     trv_4[4] = 0.30      trv_4[5] = 0.54
+#   ret_1[3] = 0.3                       ret_mean_5[5] = 1.5/5 = 0.3
+# valid needs every column, so trv_4 (t>=4) and ret_mean_5 (t>=5) leave only day 5.
+let
+    r = [0.1, 0.2, 0.3, 0.4, 0.5]
+    f = build_features(r; windows=(2, 3, 4))
+
+    @assert f.names == ["trv_2", "trv_3", "trv_4", "ret_1", "ret_mean_5", "ewma_1step"]
+    @assert size(f.X) == (5, 6)
+
+    @assert approx(f.X[2, 1], 0.05; tol=1e-15)
+    @assert approx(f.X[5, 1], 0.41; tol=1e-15)
+    @assert approx(f.X[3, 2], 0.14; tol=1e-15)
+    @assert approx(f.X[4, 3], 0.30; tol=1e-15)
+    @assert approx(f.X[5, 3], 0.54; tol=1e-15)
+    @assert approx(f.X[3, 4], 0.3; tol=1e-15)
+    @assert approx(f.X[5, 5], 0.3; tol=1e-15)
+    @assert f.X[:, 6] == ewma_variance_path(r)
+
+    @assert f.valid == [false, false, false, false, true]
+    @assert all(isnan, f.X[1, 1:3])          # undefined rows are NaN, never 0.0
+
+    # Leakage probe, same shape as (e) and (l).
+    long = [0.01 * sin(0.7t) + 0.002 for t in 1:100]
+    wrecked = copy(long); wrecked[71:end] .*= 50.0
+    a = build_features(long)
+    b = build_features(wrecked)
+
+    @assert isequal(a.X[1:70, :], b.X[1:70, :])
+    @assert a.X[71, :] != b.X[71, :]         # and day 71 itself must move
+    @assert a.valid == b.valid
+    @assert findfirst(a.valid) == 63         # default max window is 63 days
+
+    println("(w) build_features       OK  trv/ret/mean columns match pencil-and-paper; ewma column equals ewma_variance_path; valid starts at day 63 and undefined rows are NaN; wrecking returns from day 71 leaves rows 1..70 bit-identical")
+end
+
+# --- (x) GBT inside the walk-forward ----------------------------------------------
+# Wiring, like (s), not arithmetic. EvoTrees subsamples rows and columns, so the
+# repeat-run assertion is what pins the seed -- without it a fresh clone would
+# not reproduce the committed numbers. Check (s) covers the other branch, where
+# the sample is shorter than the feature window and GBT is skipped.
+let
+    r = [0.01 * sin(0.7t) + 0.002 * cos(0.31t) for t in 1:250]
+    min_train, test_size, h, fw = 120, 20, 5, (2, 3, 5)
+
+    out = walk_forward(r; min_train=min_train, test_size=test_size, h=h, feature_windows=fw)
+    feats = build_features(r; windows=fw)
+
+    for row in 1:nrow(out)
+        day = out.day[row]
+        @assert ismissing(out.gbt_hstep[row]) == !feats.valid[day]
+    end
+
+    g = collect(skipmissing(out.gbt_hstep))
+    @assert !isempty(g)
+    @assert all(>(0), g) && all(isfinite, g)
+
+    again = walk_forward(r; min_train=min_train, test_size=test_size, h=h, feature_windows=fw)
+    @assert isequal(out.gbt_hstep, again.gbt_hstep)
+
+    @assert isequal(out.ewma_hstep, again.ewma_hstep)
+    @assert isequal(out.garch_hstep, again.garch_hstep)
+
+    println("(x) walk_forward GBT     OK  $(length(g)) forecasts, present exactly where features exist, all positive and finite; two runs identical so the pinned seed reproduces; ewma/garch columns unchanged")
 end
 
 println("\nAll sanity checks passed.")
