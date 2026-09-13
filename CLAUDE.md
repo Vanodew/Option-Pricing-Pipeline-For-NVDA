@@ -19,10 +19,10 @@ Three models. One dataset. One honest answer.
 
 ### Done looks like this
 
-- [ ] A results table: EWMA vs GARCH vs GBT, scored on QLIKE and MSE, out-of-sample
-- [ ] One chart: forecast vs realized variance over the test period
-- [ ] A README stating the question, the method, the answer, and the limitations
-- [ ] `checks.jl` green, and a fresh clone reproduces every number from the committed CSV
+- [x] A results table: EWMA vs GARCH vs GBT, scored on QLIKE and MSE, out-of-sample
+- [x] One chart: forecast vs realized variance over the test period
+- [x] A README stating the question, the method, the answer, and the limitations
+- [x] `checks.jl` green, and a fresh clone reproduces every number from the committed CSV
 - [ ] Merged to `main`
 
 When those five boxes are ticked, the project is **finished** — not paused, finished. Any
@@ -45,22 +45,30 @@ If work drifts toward any of these, stop and say so rather than following it.
 ## Layout
 
 ```
-main.jl                 entry point: fetch -> vol -> price -> report
+experiment.jl           entry point for the study: walk-forward -> table -> DM tests
+chart.jl                forecast-vs-realized SVG, redrawn from the results CSV
 checks.jl               hand-verifiable sanity checks, one per core piece
+main.jl                 the original BS v0 pipeline: fetch -> vol -> price -> report
 src/data.jl             DataFetch: Yahoo chart endpoint + CSV cache
 src/volatility.jl       Volatility: log_returns, annualized_volatility
 src/black_scholes.jl    BlackScholes: bs_d1_d2, bs_call_price
 src/realized_vol.jl     RealizedVol: forward (target) and trailing (feature) RV
 src/ewma.jl             EWMA: RiskMetrics lambda=0.94 variance path, h-step rule
 src/garch.jl            Garch: GARCH(1,1) by hand-coded MLE, h-step forecast
+src/features.jl         Features: six close-derived GBT features + valid mask
 src/loss.jl             Loss: qlike, mse, mean_loss
-src/walk_forward.jl     WalkForward: expanding-window splits + per-window refit loop
+src/walk_forward.jl     WalkForward: expanding-window splits + per-window refits
+src/dm.jl               DieboldMariano: newey_west_lrv, dm_test
 data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 -> 2026-07-16
+results/walkforward.csv per-day forecasts, committed so results reproduce
+docs/original-plan.md   the pre-2026-09-13 README and 13-phase plan, archived unedited
 ```
 
-`data/prices_10y.csv` is close-only. That is **sufficient** for this scope — high–low range
-and volume were only ever needed for GBT features, which are out. Do not re-pull the data,
-and do not spend time on the Julia TLS handshake failure; the frozen CSV is the data source.
+`data/prices_10y.csv` is close-only. Do not re-pull the data, and do not spend time on the
+Julia TLS handshake failure; the frozen CSV is the data source. The cost of close-only is
+now a documented limitation rather than a non-issue: GBT sees no high–low range and no
+volume, so it works from the same information EWMA does. See the GBT feature constraint
+above.
 
 ## Setup
 
@@ -162,9 +170,12 @@ finding, not a failure.
 
 ## State
 
-Current branch is `loss-function`, one commit (`cf7d521`) ahead of `main` and not yet
-merged. Everything below the first group is on that branch, not on `main`. Nothing in the
-repo is untracked.
+Current branch is `loss-function`, **9 commits ahead of `main`** and not yet merged. Only
+the first group below is on `main`; everything else is on the branch. Working tree is
+clean — nothing untracked.
+
+**The study is finished and written up. The only thing left is the merge, and it is gated
+on the author's module walkthrough (see Branch and commit rules).**
 
 Built and verified:
 - BS v0 pipeline
@@ -179,11 +190,27 @@ Built and verified:
 - `walk_forward.jl` — expanding-window splits with the 21-day embargo, per-window GARCH
   refit under `h0_window=train_end`, convergence logged, forecasts written to `results/`;
   checks (r)(s)
-- 19 checks (a–s) passing, ~30s
+- `dm.jl` — Diebold-Mariano with Newey-West/Bartlett HAC and the HLN small-sample
+  correction; checks (t)(u)(v)
+- `features.jl` — six close-derived GBT features, NaN + `valid` flag rather than filled;
+  check (w) includes the leakage probe
+- `walk_forward.jl` GBT arm — per-window EvoTrees refit on `log(target)`, hyperparameters
+  as constants, `seed` pinned (`rng` is ignored in EvoTrees 0.18.7); check (x)
+- `experiment.jl` — three-model table plus all six DM comparisons, one command
+- `chart.jl` — forecast-vs-realized SVG, written directly, no plotting dependency
+- `README.md` — rewritten around the result; the old 13-phase plan is archived unedited in
+  `docs/original-plan.md`, awaiting the author's review
+- 24 checks (a–x) passing, ~38s
 
-Not built: the results table, the chart, Diebold-Mariano, and the whole GBT strand.
-`main.jl` is still the v0 Black-Scholes script — it does not call `walk_forward`, so the
-harness has never run on real NVDA data, only on the 30 synthetic points inside check (s).
+**The answer, on 1469 out-of-sample days across 71 windows, none failed:** QLIKE — EWMA
+0.2444, GARCH 0.2064, GBT 0.2868. Nothing beats EWMA significantly. The only significant
+difference anywhere is GARCH over GBT on QLIKE (t = −2.20, p = 0.028). The HAC correction
+is doing the work: the Newey-West SE runs 2.2–3.6× the naive one, and under a naive SE
+GARCH over EWMA would read t = 3.94, p < 0.0001.
+
+`main.jl` is still the v0 Black-Scholes script and is left that way on purpose — it is a
+working deliverable and the README describes it as the project's origin. `experiment.jl`
+is the entry point for the study.
 
 `git status` is the authority on what is actually committed — check it before assuming a
 module is safe.
@@ -195,10 +222,13 @@ module is safe.
    that module until they have.
 2. ~~**`src/loss.jl`**~~ — done on `loss-function`, checks (o)(p)(q).
 3. ~~**`src/walk_forward.jl`**~~ — done on `loss-function`, checks (r)(s).
-4. **Run it on real data.** Two models first: results table + forecast-vs-realized chart for
-   EWMA vs GARCH. This is the baseline GBT gets judged against, so it comes first.
-5. **GBT as a third model** — features, then into the same harness, then rescored.
-6. **Diebold-Mariano with HAC**, then rewrite `README.md` around the actual answer and merge.
+4. ~~**Run it on real data.**~~ Done — `experiment.jl`, `chart.jl`.
+5. ~~**GBT as a third model.**~~ Done — `features.jl` + the `walk_forward.jl` GBT arm.
+6. ~~**Diebold-Mariano with HAC**, then rewrite `README.md`.~~ Done — `dm.jl`, README.
+7. **Merge.** Blocked on the author's walkthrough of every module on the branch — their
+   rule, not a formality. Outstanding: `garch.jl` (debt from PR #1), `dm.jl`,
+   `features.jl`, the `walk_forward.jl` GBT arm, `experiment.jl`, `chart.jl`, and checks
+   (s)–(x). Also pending: what to do with `docs/original-plan.md`.
 
 One module at a time, stopping after each.
 
@@ -212,7 +242,8 @@ Scoping down removed most of these. Two remain, and they are the author's calls:
 2. **What to do when a GARCH window fails to converge** — drop the window, carry the previous
    fit forward, or exclude the day.
 3. **Variance vs volatility units for scoring.** The code and the convention above say
-   variance; `README.md` Phase 2 says "annualized realized vol." Genuinely unresolved. The
+   variance; the archived plan (`docs/original-plan.md`, Phase 2) says "annualized realized
+   vol." The code's convention won in practice and the README reports in variance. The
    code's convention governs until the author says otherwise.
 
 ## Hand-code vs library
