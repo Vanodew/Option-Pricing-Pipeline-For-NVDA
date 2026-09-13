@@ -23,6 +23,7 @@ const PW, PH = W - ML - MR, HT - MT - MB # plot area
 const C_REALIZED = "#333333"
 const C_EWMA = "#4C72B0"
 const C_GARCH = "#DD8452"
+const C_GBT = "#55A868"
 const C_GRID = "#E2E2E2"
 const C_AXIS = "#9A9A9A"
 const C_TEXT = "#222222"
@@ -39,7 +40,8 @@ function main()
 
     keep = .!ismissing.(res.realized) .&
            .!ismissing.(res.ewma_hstep) .&
-           .!ismissing.(res.garch_hstep)
+           .!ismissing.(res.garch_hstep) .&
+           .!ismissing.(res.gbt_hstep)
     d = res[keep, :]
     isempty(d) && error("nothing to plot: no rows with a target and both forecasts")
 
@@ -50,9 +52,10 @@ function main()
     realized = Vector{Float64}(d.realized)
     ewma = Vector{Float64}(d.ewma_hstep)
     garch = Vector{Float64}(d.garch_hstep)
+    gbt = Vector{Float64}(d.gbt_hstep)
 
-    lo = minimum(min.(realized, ewma, garch)) * 0.85
-    hi = maximum(max.(realized, ewma, garch)) * 1.15
+    lo = minimum(min.(realized, ewma, garch, gbt)) * 0.85
+    hi = maximum(max.(realized, ewma, garch, gbt)) * 1.15
 
     x0, x1 = float(first(days)), float(last(days))
     px(day) = ML + (day - x0) / (x1 - x0) * PW
@@ -104,8 +107,9 @@ function main()
 
     # --- series ------------------------------------------------------------
     println(io, polyline(days, realized, C_REALIZED, 1.1, 0.55))
-    println(io, polyline(days, ewma, C_EWMA, 1.6, 0.95))
-    println(io, polyline(days, garch, C_GARCH, 1.6, 0.95))
+    println(io, polyline(days, ewma, C_EWMA, 1.5, 0.9))
+    println(io, polyline(days, garch, C_GARCH, 1.5, 0.9))
+    println(io, polyline(days, gbt, C_GBT, 1.5, 0.9))
 
     # --- axis lines --------------------------------------------------------
     println(io, "<line x1=\"$ML\" y1=\"$(MT + PH)\" x2=\"$(ML + PW)\" y2=\"$(MT + PH)\" ",
@@ -117,10 +121,11 @@ function main()
     lx = ML + PW + 22
     entries = (
         ("Realized", C_REALIZED, "the target: sum of squared\nreturns over t+1..t+$H"),
-        ("EWMA", C_EWMA, "RiskMetrics &#955;=0.94,\nh-step = h &#215; one-step"),
-        ("GARCH(1,1)", C_GARCH, "refit every window,\nmean-reverting h-step"),
+        ("EWMA", C_EWMA, "RiskMetrics &#955;=0.94,\nbias +0.01%"),
+        ("GARCH(1,1)", C_GARCH, "refit every window,\nbias +7.5%"),
+        ("GBT", C_GBT, "refit every window,\nbias -15.7%"),
     )
-    ly = MT + 6
+    ly = MT + 4
     for (label, colour, note) in entries
         println(io, "<line x1=\"$lx\" y1=\"$ly\" x2=\"$(lx + 22)\" y2=\"$ly\" ",
                     "stroke=\"$colour\" stroke-width=\"2.4\"/>")
@@ -130,15 +135,16 @@ function main()
             println(io, "<text x=\"$lx\" y=\"$(ly + 20 + 12 * k)\" font-size=\"10\" ",
                         "fill=\"$C_MUTED\">$line</text>")
         end
-        ly += 74
+        ly += 68
     end
 
     # --- caption -----------------------------------------------------------
     println(io, "<text x=\"$ML\" y=\"$(HT - 16)\" font-size=\"11\" fill=\"$C_MUTED\">",
-                "GARCH spans $(round(maximum(garch) / minimum(garch), digits=1))&#215; ",
-                "top to bottom against realized's ",
-                "$(round(maximum(realized) / minimum(realized), digits=1))&#215;: it rarely ",
-                "forecasts a calm month, which is why it is never badly caught low.</text>")
+                "No model beats EWMA significantly. GARCH scores best by sitting high and ",
+                "flat (",
+                "$(round(maximum(garch) / minimum(garch), digits=1))&#215; range against ",
+                "realized's $(round(maximum(realized) / minimum(realized), digits=1))&#215;), ",
+                "never badly caught low; GBT runs low and loses to GARCH on QLIKE.</text>")
 
     println(io, "</svg>")
 
@@ -154,6 +160,8 @@ function main()
             "span $(round(maximum(garch) / minimum(garch), digits=1))x")
     println("  ewma        : median $(round(median(ewma), sigdigits=4)), " *
             "span $(round(maximum(ewma) / minimum(ewma), digits=1))x")
+    println("  gbt         : median $(round(median(gbt), sigdigits=4)), " *
+            "span $(round(maximum(gbt) / minimum(gbt), digits=1))x")
 end
 
 main()
