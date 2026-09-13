@@ -1,216 +1,214 @@
-# Option Pricing Pipeline for NVDA (v0)
+# Forecasting NVDA's realized variance
 
-Minimal end-to-end options-pricing prototype in Julia:
+**Question.** Does a GARCH(1,1) or a gradient-boosted tree forecast NVDA's
+21-day-ahead realized variance better than a two-line EWMA, out-of-sample, under
+walk-forward evaluation?
 
-1. Pull ~2 years of daily NVDA closes (Yahoo Finance chart endpoint, cached to `data/prices.csv`).
-2. Compute daily log returns and their sample standard deviation.
-3. Annualize with sqrt(252) to get historical volatility.
-4. Price a European call with Black-Scholes and print the result with all inputs.
+**Answer.** No. Neither beats the EWMA baseline by a statistically significant
+margin. The only significant difference anywhere in the study is GARCH beating
+the gradient-boosted tree — the simpler model winning.
 
-Deliberately simple: constant volatility, no dividends, no GARCH/ML/GPU. Those are later projects.
+![Forecast vs realized variance](results/forecast_vs_realized.png)
+
+## Results
+
+1469 out-of-sample days (2020-08-10 to 2026-06-15), 71 walk-forward windows,
+none of which failed to converge. Lower is better for both losses.
+
+| Model | QLIKE | MSE | mean forecast | bias vs realized |
+|---|---|---|---|---|
+| EWMA | 0.244398 | 2.358e-4 | 0.021189 | **+0.008%** |
+| **GARCH(1,1)** | **0.206439** | **2.132e-4** | 0.022777 | +7.5% |
+| GBT | 0.286787 | 2.438e-4 | 0.017854 | −15.7% |
+
+Mean realized 21-day variance over the same days: 0.021188 (50.4% annualized
+volatility).
+
+Diebold-Mariano tests, Newey-West standard errors at `q = h-1 = 20` lags. A
+positive statistic means the first model is worse. Statistics and p-values are
+the Harvey-Leybourne-Newbold small-sample versions.
+
+| Comparison | Loss | statistic | p | HAC/naive se | verdict at 5% |
+|---|---|---|---|---|---|
+| EWMA vs GARCH | QLIKE | 1.096 | 0.273 | 3.55× | not significant |
+| EWMA vs GARCH | MSE | 1.024 | 0.306 | 3.11× | not significant |
+| EWMA vs GBT | QLIKE | −1.594 | 0.111 | 3.04× | not significant |
+| EWMA vs GBT | MSE | −0.270 | 0.787 | 2.81× | not significant |
+| GARCH vs GBT | QLIKE | −2.196 | **0.028** | 3.38× | **significant** |
+| GARCH vs GBT | MSE | −1.324 | 0.186 | 2.24× | not significant |
+
+The two losses agree on the ordering, so there is no loss-disagreement finding
+to report.
+
+### The `HAC/naive se` column is the result
+
+That column is the ratio of the Newey-West standard error to the naive one. It
+runs 2.2× to 3.6× across every comparison, and it is the difference between this
+study's conclusion and its opposite.
+
+Consecutive 21-day forward windows share 20 of their 21 returns, so the loss
+differentials are heavily autocorrelated. Treating 1469 overlapping observations
+as independent understates every standard error by roughly a factor of three.
+Under a naive standard error, EWMA vs GARCH on QLIKE reads t = 3.94, p < 0.0001
+— a clean, publishable-looking win for GARCH. It is an artifact. The effective
+sample here is closer to 70 observations than 1469.
+
+### Why GARCH scores best without forecasting better
+
+GARCH's forecasts span 5.8× from smallest to largest. Realized variance spans
+20.8×. GARCH sits high and nearly flat around 0.021, three to four times too
+high through the calm stretches of 2021, 2023 and late 2025 — and it is
+therefore never badly caught low. QLIKE punishes under-prediction far harder
+than over-prediction, so a stable, upward-biased forecast scores well without
+tracking anything.
+
+EWMA has almost exactly the right level (its mean forecast is within 0.008% of
+mean realized variance, which is a property of the estimator, not tuning) and
+visibly the right shape, but it is a trailing estimator: it turns after the
+target does, so it is pointing the wrong way at every turning point.
+
+GBT tracks the shape best of the three — it spans 20.5× against realized's
+20.8× — but sits about 16% low throughout, and that is what sinks its score.
+
+### Why GBT runs low
+
+The tree is trained on `log(variance)` and its predictions are converted back
+with `exp`. Variance is bounded below by zero and heavily skewed; on the raw
+scale a squared-error split criterion chases a handful of crisis months and
+ignores everything else, so the log target is what makes the model fit at all.
+
+But `exp(mean of logs)` is the geometric mean, not the arithmetic mean, so the
+back-transform is biased low by construction. Under QLIKE that is the expensive
+direction to be wrong in.
+
+**This bias is left uncorrected on purpose.** The transform was chosen before
+any score was seen. Applying a bias correction after seeing that GBT came last
+would be fitting the test set through the back door. The honest report is the
+number the pre-committed choice produced.
+
+## Method
+
+**Data.** 2512 NVDA daily closes, 2016-07-19 to 2026-07-16, giving 2511 daily
+log returns. Close-only — no high-low range, no volume. Frozen in
+`data/prices_10y.csv` and never re-pulled.
+
+**Target.** Total realized variance over the next 21 trading days: the sum of
+squared log returns from `t+1` to `t+21`. Everything is fitted and scored in
+variance units; square roots appear only in reporting.
+
+**Models.**
+
+- **EWMA** — RiskMetrics, λ = 0.94, no fitted parameters. The 21-day forecast is
+  21 × the one-step forecast.
+- **GARCH(1,1)** — hand-coded likelihood, optimizer setup and robust standard
+  errors, refit inside every window. Cross-checked against `ARCHModels.jl`:
+  ω, α, β, μ and the log-likelihood agree to about 7 significant figures, and
+  Huber sandwich standard errors agree to 2e-6.
+- **GBT** — `EvoTrees.jl`, refit inside every window, trained on log-variance.
+  Six close-derived features: trailing realized variance over 5, 21 and 63 days;
+  the day's return; the mean of the last 5 returns; and EWMA's own forecast.
+  Hyperparameters were fixed in advance and never tuned against the test period.
+
+**Evaluation.** Expanding-window walk-forward. Training starts at index 1 and
+grows; the first forecast comes after 1000 days (~4 years); models are refit
+every 21 days. A **21-day embargo** separates the end of each training window
+from the start of its test window, because a 21-day forward target computed at
+the last training day would otherwise be built from returns inside the test
+period.
+
+Every model sees the identical harness and is scored on the identical day set —
+a day missing from any model is dropped from all of them.
+
+**Losses.** QLIKE (`RV/F − ln(RV/F) − 1`) and MSE, both reported. Both remain
+consistent when the "truth" is itself a noisy proxy (Patton 2011). QLIKE is the
+headline because it is built for variance and punishes under-prediction hardest.
+
+## Limitations
+
+Read these before quoting any number above.
+
+- **The effective sample is about 70 observations, not 1469.** Overlapping
+  windows. Every conclusion is drawn from a small sample, and "no significant
+  difference" is partly a statement about statistical power.
+- **One ticker, one period.** NVDA from 2016 to 2026 is a single, unusually
+  volatile path. Nothing here generalizes without re-running elsewhere.
+- **GBT has no information advantage.** With close-only data, its features are
+  derived from the same returns EWMA already uses. It is a more flexible
+  functional form applied to identical information, so a null result was the
+  likely outcome and should not be read as "trees don't work for volatility."
+- **GBT's back-transform bias is uncorrected** (see above).
+- **λ = 0.94 is a convention, not a fitted value.** It was not optimized for
+  this sample — which is part of why the baseline is honest, but it does mean
+  EWMA was not given its best shot either.
+- **Expanding window only.** A rolling window was not tested; it is a live
+  decision, not a settled one.
+- **GARCH non-convergence handling is untested.** All 71 windows converged here,
+  so the policy for a failed fit was never exercised.
+- **No economic evaluation.** No transaction costs, no option P&L, no position
+  sizing. Lower QLIKE is not the same as making money.
+
+## Running it
+
+```sh
+julia --project=. -e "using Pkg; Pkg.instantiate()"   # one-time, pinned versions
+julia --project=. checks.jl                            # 24 sanity checks (a-x)
+julia --project=. experiment.jl                        # walk-forward + results + DM
+julia --project=. chart.jl                             # redraws the chart from the CSV
+```
+
+`checks.jl` must print `All sanity checks passed.` Every check uses inputs whose
+correct answer is derivable by hand — pencil-and-paper cases, not property
+tests. Several are leakage probes: they perturb the future and assert that
+features, targets and forecasts at earlier indices do not move.
+
+`Manifest.toml` is committed deliberately so a fresh clone rebuilds the identical
+environment. `results/walkforward.csv` holds the per-day forecasts and is
+committed too, so every number above can be reproduced without refitting.
+
+The GBT seed is pinned: `EvoTrees` subsamples rows and columns, and without a
+fixed seed a fresh clone would not reproduce these results.
 
 ## Layout
 
 ```
-main.jl               entry point: fetch -> vol -> price -> report
-checks.jl             hand-verifiable sanity checks for each core piece
-src/data.jl           DataFetch: Yahoo fetch + CSV cache
-src/volatility.jl     Volatility: log_returns, annualized_volatility
-src/black_scholes.jl  BlackScholes: bs_d1_d2, bs_call_price
-data/prices.csv       cached price history
+experiment.jl           walk-forward, three-model results table, DM tests
+chart.jl                forecast-vs-realized SVG (written directly, no plotting dep)
+checks.jl               hand-verifiable sanity checks, one per core piece
+main.jl                 the original Black-Scholes v0 pipeline (see below)
+
+src/data.jl             Yahoo chart endpoint + CSV cache
+src/volatility.jl       log returns, annualized volatility
+src/black_scholes.jl    bs_d1_d2, bs_call_price
+src/realized_vol.jl     forward (target) and trailing (feature) realized variance
+src/ewma.jl             RiskMetrics EWMA variance path and h-step rule
+src/garch.jl            GARCH(1,1) by hand-coded MLE, h-step forecast
+src/features.jl         GBT feature matrix
+src/loss.jl             QLIKE, MSE, mean_loss
+src/walk_forward.jl     expanding-window splits, per-window refits
+src/dm.jl               Diebold-Mariano with Newey-West standard errors
+
+data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 to 2026-07-16
+results/walkforward.csv per-day forecasts for all three models
+docs/original-plan.md   the repo's original README and 13-phase plan, archived
 ```
 
-## Setup and run
+## About the repository name
 
-```sh
-julia --project=. -e "using Pkg; Pkg.instantiate()"   # one-time dependency install
-julia --project=. checks.jl                            # sanity checks
-julia --project=. main.jl                              # full pipeline
-```
+This started as an option-pricing project, which is where the name and the
+Black-Scholes code come from. `main.jl` still runs that original pipeline: fetch
+prices, estimate historical volatility, price a European call.
 
-Pass `force_refresh=true` to `fetch_price_history` in `main.jl` to re-download prices instead of using the cache.
+That work made the real question obvious — Black-Scholes takes a volatility
+input, and everything then depends on where that number comes from. Forecasting
+it turned out to be the more interesting problem, so the project became a
+volatility study.
 
-## Model assumptions worth knowing for interviews
+The original plan ran to 13 phases and ended in a working paper. It was cut down
+on 2026-08-24 to a single answerable question, because the size of the plan was
+the main thing preventing any of it from being built. Gradient-boosted trees
+were added back on 2026-09-12 as a deliberate, single re-expansion. Other
+tickers, regime analysis, transaction-cost overlays and the paper remain out of
+scope.
 
-- Log returns are treated as i.i.d. normal; sqrt(252) annualization relies on the independence part.
-- Volatility is *historical* (backward-looking). Real option markets trade on *implied* vol.
-- Black-Scholes here assumes no dividends, constant r and sigma, European exercise.
-
-
-**Research question:** For NVDA over ~2015–2025, does a gradient-boosted-tree forecast of 21-day-ahead realized volatility beat EWMA and GARCH(1,1) out-of-sample under walk-forward evaluation — and does any edge survive a breakdown by volatility regime?
-
-**Deliverable:** public repo + a working paper (15–25 pages) posted to SSRN. Not peer-reviewed, and say so.
-
-**Target dates:** empirical core by end of Aug → expansion Sept → robustness Oct → writing Nov → ship Dec.
-
-**Standing rule:** every time a number surprises you on the upside, look for the leak before you celebrate.
-
----
-
-## Phase 0 — Audit what already exists
-
-- [ ] Run the full test suite, confirm all 12 tests still pass, record the runtime
-- [ ] Confirm the `h0_window` seeding fix actually landed (GARCH must NOT seed from full-sample variance)
-- [ ] Confirm the GARCH/EWMA variance-indexing alignment fix landed (the off-by-one)
-- [ ] Write down, in the repo README, exactly which day each model's variance output refers to — one sentence, unambiguous
-- [ ] Fix the expired-cert / HTTP dependency issue so data pulls work, or commit to a static CSV and move on
-- [ ] Freeze the data: pull once, save to CSV, commit it. Every result from here reproduces from that file
-- [ ] `git log` sanity check — know what's committed vs sitting uncommitted in your working tree
-
----
-
-## Phase 1 — Data and returns
-
-- [ ] Daily OHLCV for NVDA, ~2015 to present, from a single source
-- [ ] Compute daily log returns
-- [ ] Plot the return series. Confirm you can _see_ volatility clustering with your own eyes
-- [ ] Check for gaps, splits, and zero-return days; document how you handled each
-- [ ] Record the exact date range and row count — this goes in the paper's data section
-
----
-
-## Phase 2 — Define the target (the highest-risk step)
-
-- [ ] Define the target: annualized realized vol over days t+1 … t+21, computed from log returns
-- [ ] Implement it
-- [ ] **Hand-verify on 3 rows.** Pick three dates, compute the target manually in a spreadsheet, match to the code
-- [ ] Confirm the last 21 rows of the dataset have no target (they can't — the future isn't there yet)
-- [ ] Write a test that fails if the target ever uses a return from day ≤ t
-- [ ] Note the overlap problem in your notes: 21-day windows share 20 of 21 days, so ~2,500 rows ≈ ~120 independent observations
-
----
-
-## Phase 3 — EWMA baseline
-
-- [ ] Implement EWMA variance recursion with λ = 0.94
-- [ ] Confirm it's genuinely causal — forecast for t+1 uses nothing after t
-- [ ] Produce forecasts for the full sample
-- [ ] Score it on MSE and QLIKE. **This is the number everything else must beat**
-- [ ] Sanity check: does EWMA vol track the visible spikes in the return plot?
-- [ ] Optional: try a couple of λ values, but pick 0.94 for the headline and say why
-
----
-
-## Phase 4 — GARCH(1,1)
-
-- [ ] Verify the hand-rolled likelihood against a library fit (Python `arch` is fine as a cross-check)
-- [ ] Confirm fitted params on full sample match what you recorded: long-run vol ~52.5% vs ~49.6% realized
-- [ ] Add a convergence check: flag any fit that fails, hits max iterations, or lands with α+β ≥ 1
-- [ ] Add a parameter-recovery test: simulate from known (ω, α, β), refit, confirm you get them back
-- [ ] Implement multi-step-ahead forecasting to a 21-day horizon
-- [ ] Confirm the EWMA-equivalence test still holds (GARCH with ω=0, α+β=1 should reproduce EWMA)
-- [ ] Score full-sample forecasts on MSE and QLIKE
-- [ ] Be able to explain, out loud, what α and β mean and what α+β measures
-
----
-
-## Phase 5 — Features for the GBT
-
-- [ ] Realized vol at 5, 10, 21, 63 day lookbacks
-- [ ] Recent returns and absolute returns (a few lags)
-- [ ] High–low range (Parkinson-style), which carries info close-to-close misses
-- [ ] Volume relative to its own trailing average
-- [ ] A leverage-effect feature (something asymmetric in the sign of recent returns)
-- [ ] **Cap the feature count at 10.** More than that on ~120 independent observations is overfitting with extra steps
-- [ ] Write one test per feature confirming it uses no data after day t
-- [ ] Plot each feature against the target — anything with suspiciously high correlation is a leak, not a discovery
-
----
-
-## Phase 6 — Gradient-boosted trees
-
-- [ ] Fit a first GBT on a simple time-ordered split just to get it running
-- [ ] Set up an **inner validation split** inside the training window for hyperparameter tuning
-- [ ] Tune depth, learning rate, and number of trees on that inner split only — never on test
-- [ ] Record the chosen hyperparameters and how you picked them
-- [ ] Extract feature importances; check they're economically sensible, not random
-- [ ] Score against EWMA and GARCH on the same split
-
----
-
-## Phase 7 — Walk-forward harness
-
-- [ ] Build the rolling loop: fit on data through date T, predict forward, roll, refit, repeat
-- [ ] **Insert a 21-day embargo gap** between the end of each training window and the start of its test window
-- [ ] Refit GARCH inside every window (no reusing a full-sample fit)
-- [ ] Log convergence status per window; report how many failed
-- [ ] Retune GBT hyperparameters inside each window, or fix them once and state that you did
-- [ ] Decide expanding vs rolling window; justify the choice in one sentence
-- [ ] Run all three models through the identical harness so the comparison is apples-to-apples
-- [ ] Store per-day forecasts from every model to disk — you'll need them repeatedly
-
----
-
-## Phase 8 — Evaluation
-
-- [ ] Compute MSE for all three models across the full out-of-sample period
-- [ ] Compute QLIKE for all three
-- [ ] Build the headline results table: model × loss function
-- [ ] **Diebold–Mariano test** on each pairwise comparison
-- [ ] Use HAC / Newey–West standard errors — forecast errors are autocorrelated by construction
-- [ ] State plainly whether differences are statistically significant, and don't oversell if they aren't
-- [ ] If MSE and QLIKE disagree, write a paragraph on why — that disagreement is a finding
-- [ ] Read Patton (2011) on loss functions robust to a noisy volatility proxy; cite it for why these two
-
----
-
-## Phase 9 — Regime breakdown and robustness
-
-- [ ] Define volatility regimes (e.g. terciles of trailing realized vol)
-- [ ] Re-score every model within each regime
-- [ ] Answer directly: does GBT win everywhere, only in calm periods, or only in crises?
-- [ ] Break results out by year to check the edge isn't one lucky period
-- [ ] Test horizon sensitivity: rerun at 5-day and 10-day targets
-- [ ] Test λ sensitivity for EWMA
-- [ ] Note explicitly: does any edge survive transaction costs if traded? (Even a qualitative answer.)
-
----
-
-## Phase 10 — Expand beyond NVDA
-
-- [ ] Pick 10–20 liquid names plus SPY, spanning sectors and vol levels
-- [ ] Run the identical pipeline unchanged across all of them
-- [ ] Build a cross-sectional results table: which models win, on which names
-- [ ] Check whether NVDA was unusual — it's a high-vol, high-persistence name, and it may not generalize
-- [ ] Report per-name results, not just an average
-
----
-
-## Phase 11 — Write the paper
-
-- [ ] Abstract (write it last, ~150 words)
-- [ ] Introduction: the question, why it matters, what you find
-- [ ] Literature: 10–15 papers. State clearly that this is a replication-style study, not a novel result
-- [ ] Data: source, range, cleaning decisions
-- [ ] Methodology: EWMA, GARCH, GBT, the walk-forward design, the embargo gap
-- [ ] Results: tables and figures, with DM tests
-- [ ] Regime and robustness section
-- [ ] **Limitations, written honestly** — overlapping windows, small effective sample, single-source data, no transaction costs, proxy noise
-- [ ] Conclusion
-- [ ] Figures: return series with clustering, forecast vs realized overlay, loss-by-regime bar chart
-- [ ] Reread hunting for any claim the results don't actually support; delete or soften each one
-
----
-
-## Phase 12 — Ship
-
-- [ ] Clean the repo: README, reproduction instructions, `Project.toml`, one-command run
-- [ ] Confirm a fresh clone reproduces every number in the paper
-- [ ] Post to SSRN. Ask the research department head for help with the submission mechanics
-- [ ] Link the paper from the repo and the repo from the paper
-- [ ] Add to resume as **working paper / preprint** — never as "published"
-- [ ] Uncomment the pipeline entry in `resume_final.tex`, keeping only bullets that describe code that actually runs
-- [ ] Email Prof. Asgher Ali: lead with the optimal-control ↔ optimal-execution overlap or deep BSDE, attach the ADE paper and this study, ask about supervising project two
-
----
-
-## Interview defense — rehearse these cold
-
-- [ ] "How do you know you didn't leak the future?"
-- [ ] "Why 21 days?"
-- [ ] "Why QLIKE as well as MSE?"
-- [ ] "What do α and β mean, and what does α+β tell you?"
-- [ ] "Your effective sample size is what, exactly?"
-- [ ] "Why should I believe this difference isn't noise?"
-- [ ] "What would change your conclusion?"
-- [ ] "Hasn't this been done before?" (Answer: yes. Say so.)
+The original plan is preserved unedited in `docs/original-plan.md`. Scope
+decisions and conventions live in `CLAUDE.md`.
