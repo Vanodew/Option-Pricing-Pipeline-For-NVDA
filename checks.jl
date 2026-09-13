@@ -9,6 +9,7 @@ include("src/ewma.jl")
 include("src/garch.jl")
 include("src/loss.jl")
 include("src/walk_forward.jl")
+include("src/dm.jl")
 
 using .Volatility
 using .BlackScholes
@@ -17,6 +18,7 @@ using .EWMA
 using .Garch
 using .Loss
 using .WalkForward
+using .DieboldMariano
 using Statistics
 using Random: MersenneTwister, randn
 using CSV: File
@@ -495,6 +497,109 @@ let
 
     n_failed = length(splits) - length(unique(out.window[out.converged]))
     println("(s) walk_forward         OK  $(nrow(out)) rows match $(expected_rows) expected from the splits; realized/ewma columns match the independently-computed reference at every (window,day); $(n_failed)/$(length(splits)) windows failed to converge and their garch columns are missing, nothing else")
+end
+
+# --- (t) Newey-West long-run variance, by hand ------------------------------------
+# d = [1,2,3,4], dbar = 2.5, deviations [-1.5,-0.5,0.5,1.5]. Divisor is 1/T.
+#   gamma_0 = (2.25 + 0.25 + 0.25 + 2.25)/4 = 1.25
+#   gamma_1 = [0.75 - 0.25 + 0.75]/4        = 0.3125
+#   S(q=1)  = 1.25 + 2(0.5)(0.3125)         = 1.5625
+let
+    d = [1.0, 2.0, 3.0, 4.0]
+
+    @assert approx(newey_west_lrv(d, 0), 1.25; tol=1e-15)
+    @assert approx(newey_west_lrv(d, 1), 1.5625; tol=1e-15)
+    @assert newey_west_lrv(d, 1) > newey_west_lrv(d, 0)
+
+    # Raising q re-weights every lag, it does not just append one: the weight is
+    # 1 - j/(q+1). q=1 -> q=2 moves lag 1 from 1/2 to 2/3 and adds lag 2 at 1/3.
+    #   gamma_2 = [(0.5)(-1.5) + (1.5)(-0.5)]/4 = -0.375
+    #   S(q=2)  = 1.25 + 2(2/3)(0.3125) + 2(1/3)(-0.375) = 17/12
+    # S(q=2) < S(q=1) here -- more lags does not mean a bigger variance.
+    @assert approx(newey_west_lrv(d, 2), 17 / 12; tol=1e-15)
+    @assert newey_west_lrv(d, 2) < newey_west_lrv(d, 1)
+
+    # Bad bandwidths are rejected rather than silently clamped.
+    @assert throws(() -> newey_west_lrv(d, -1))
+    @assert throws(() -> newey_west_lrv(d, 4))
+    @assert throws(() -> newey_west_lrv([1.0], 0))
+
+    println("(t) newey_west_lrv       OK  q=0 -> 1.25 = gamma_0; q=1 -> 1.5625 by hand; S grows with q on a positively autocorrelated series")
+end
+
+# --- (u) Diebold-Mariano statistic, by hand ---------------------------------------
+# loss_a - loss_b = [1,2,3,4] from (t): dbar = 2.5, S(q=1) = 1.5625.
+#   se   = sqrt(1.5625/4) = 0.625
+#   stat = 2.5/0.625      = 4.0 exactly
+# q=0 gives 2.5/sqrt(0.3125) = 2*sqrt(5) = 4.4721, so the HAC correction shrinks
+# it -- the right direction for a positively autocorrelated differential.
+# HLN at h=1, T=4: adj = (4 + 1 - 2 + 0)/4 = 3/4, stat_hln = 4*sqrt(0.75)
+#                      = 2*sqrt(3) = 3.4641
+let
+    loss_a = [3.0, 4.0, 5.0, 6.0]
+    loss_b = [2.0, 2.0, 2.0, 2.0]
+
+    r = dm_test(loss_a, loss_b; q=1, h=1)
+    @assert r.n == 4 && r.q == 1
+    @assert approx(r.dbar, 2.5; tol=1e-15)
+    @assert approx(r.lrv, 1.5625; tol=1e-15)
+    @assert approx(r.se, 0.625; tol=1e-15)
+    @assert approx(r.stat, 4.0; tol=1e-15)
+    @assert approx(r.stat_hln, 2 * sqrt(3); tol=1e-12)
+    @assert r.stat_hln < r.stat          # the small-sample correction shrinks it
+
+    r0 = dm_test(loss_a, loss_b; q=0, h=1)
+    @assert approx(r0.stat, 2 * sqrt(5); tol=1e-12)
+    @assert r.stat < r0.stat             # HAC shrinks vs the naive standard error
+
+    # Default bandwidth is h-1: the MA(h-1) structure of optimal h-step errors.
+    @assert dm_test(loss_a, loss_b; h=4).q == 3
+    # ...but it can never exceed T-1.
+    @assert dm_test(loss_a, loss_b; h=99).q == 3
+
+    println("(u) dm_test              OK  dbar=2.5, S=1.5625, se=0.625 -> stat=4.0 exactly; HAC shrinks 4.472=2sqrt(5) -> 4.0; HLN -> 2sqrt(3)=3.4641; default q = h-1")
+end
+
+# --- (v) DM sign convention, degeneracy, and missing handling ----------------------
+# No arithmetic needed: a model tied with itself gives stat 0 and p 1 rather than
+# 0/0; swapping the arguments flips the sign and nothing else; a pair counts only
+# when both losses are present.
+let
+    a = [1.0, 4.0, 2.0, 7.0, 3.0]
+    b = [2.0, 1.0, 5.0, 3.0, 4.0]
+
+    same = dm_test(a, a; q=1, h=1)
+    @assert same.dbar == 0.0 && same.lrv == 0.0
+    @assert same.stat == 0.0 && same.pvalue == 1.0
+    @assert !isnan(same.stat)
+
+    fwd = dm_test(a, b; q=1, h=1)
+    rev = dm_test(b, a; q=1, h=1)
+    @assert approx(fwd.stat, -rev.stat; tol=1e-12)
+    @assert approx(fwd.dbar, -rev.dbar; tol=1e-15)
+    @assert approx(fwd.lrv, rev.lrv; tol=1e-15)     # variance is sign-blind
+    @assert fwd.pvalue == rev.pvalue
+
+    # Higher loss on A => positive statistic => A is worse.
+    worse = dm_test([5.0, 6.0, 7.0, 9.0], [1.0, 2.0, 3.0, 4.0]; q=0, h=1)
+    @assert worse.dbar > 0 && worse.stat > 0
+
+    # A constant nonzero differential has zero long-run variance and an infinite
+    # statistic. Reporting "no difference" there would be the worst answer, so
+    # it must refuse instead.
+    @assert throws(() -> dm_test([5.0, 6.0, 7.0, 8.0], [1.0, 2.0, 3.0, 4.0]; q=0, h=1))
+
+    # Missing in either series drops that pair, and only that pair.
+    am = [1.0, missing, 2.0, 7.0, 3.0]
+    bm = [2.0, 1.0, missing, 3.0, 4.0]
+    dropped = dm_test(am, bm; q=1, h=1)
+    @assert dropped.n == 3
+    kept = dm_test([1.0, 7.0, 3.0], [2.0, 3.0, 4.0]; q=1, h=1)
+    @assert approx(dropped.stat, kept.stat; tol=1e-15)
+
+    @assert throws(() -> dm_test([1.0, 2.0], [1.0]))
+
+    println("(v) dm_test conventions  OK  a vs itself -> stat 0, p 1 (not NaN); swapping args flips the sign only; positive stat = first model worse; missing pairs drop out and match the pre-filtered series")
 end
 
 println("\nAll sanity checks passed.")
