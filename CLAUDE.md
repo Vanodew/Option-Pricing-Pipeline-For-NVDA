@@ -61,8 +61,12 @@ src/walk_forward.jl     WalkForward: expanding-window splits + per-window refits
 src/dm.jl               DieboldMariano: newey_west_lrv, dm_test
 data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 -> 2026-07-16
 results/walkforward.csv per-day forecasts, committed so results reproduce
-docs/original-plan.md   the pre-2026-09-13 README and 13-phase plan, archived unedited
 ```
+
+`docs/original-plan.md` holds the pre-2026-09-13 README and its 13-phase plan, unedited.
+It is **deliberately untracked** (see `.gitignore`) — kept on the author's machine, not
+published. The same content is in history at `git show a2e458a:README.md`, so nothing is
+lost if the local copy goes.
 
 `data/prices_10y.csv` is close-only. Do not re-pull the data, and do not spend time on the
 Julia TLS handshake failure; the frozen CSV is the data source. The cost of close-only is
@@ -198,8 +202,8 @@ Built and verified:
   as constants, `seed` pinned (`rng` is ignored in EvoTrees 0.18.7); check (x)
 - `experiment.jl` — three-model table plus all six DM comparisons, one command
 - `chart.jl` — forecast-vs-realized SVG, written directly, no plotting dependency
-- `README.md` — rewritten around the result; the old 13-phase plan is archived unedited in
-  `docs/original-plan.md`, awaiting the author's review
+- `README.md` — rewritten around the result. Reviewed 2026-09-14: both versions kept, the
+  old one local-only and untracked
 - 24 checks (a–x) passing, ~38s
 
 **The answer, on 1469 out-of-sample days across 71 windows, none failed:** QLIKE — EWMA
@@ -228,7 +232,7 @@ module is safe.
 7. **Merge.** Blocked on the author's walkthrough of every module on the branch — their
    rule, not a formality. Outstanding: `garch.jl` (debt from PR #1), `dm.jl`,
    `features.jl`, the `walk_forward.jl` GBT arm, `experiment.jl`, `chart.jl`, and checks
-   (s)–(x). Also pending: what to do with `docs/original-plan.md`.
+   (s)–(x).
 
 One module at a time, stopping after each.
 
@@ -242,8 +246,9 @@ Scoping down removed most of these. Two remain, and they are the author's calls:
 2. **What to do when a GARCH window fails to converge** — drop the window, carry the previous
    fit forward, or exclude the day.
 3. **Variance vs volatility units for scoring.** The code and the convention above say
-   variance; the archived plan (`docs/original-plan.md`, Phase 2) says "annualized realized
-   vol." The code's convention won in practice and the README reports in variance. The
+   variance; the original plan's Phase 2 (`git show a2e458a:README.md`) says "annualized
+   realized vol." The code's convention won in practice and the README reports in
+   variance. The
    code's convention governs until the author says otherwise.
 
 ## Hand-code vs library

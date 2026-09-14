@@ -189,7 +189,6 @@ src/dm.jl               Diebold-Mariano with Newey-West standard errors
 
 data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 to 2026-07-16
 results/walkforward.csv per-day forecasts for all three models
-docs/original-plan.md   the repo's original README and 13-phase plan, archived
 ```
 
 ## About the repository name
@@ -210,5 +209,10 @@ were added back on 2026-09-12 as a deliberate, single re-expansion. Other
 tickers, regime analysis, transaction-cost overlays and the paper remain out of
 scope.
 
-The original plan is preserved unedited in `docs/original-plan.md`. Scope
-decisions and conventions live in `CLAUDE.md`.
+The original README and its full 13-phase plan remain in git history:
+
+```sh
+git show a2e458a:README.md
+```
+
+Scope decisions and conventions live in `CLAUDE.md`.
