@@ -174,7 +174,7 @@ fixed seed a fresh clone would not reproduce these results.
 experiment.jl           walk-forward, three-model results table, DM tests
 chart.jl                forecast-vs-realized SVG (written directly, no plotting dep)
 checks.jl               hand-verifiable sanity checks, one per core piece
-main.jl                 the original Black-Scholes v0 pipeline (see below)
+main.jl                 the original Black-Scholes v0 pipeline
 
 src/data.jl             Yahoo chart endpoint + CSV cache
 src/volatility.jl       log returns, annualized volatility
@@ -191,28 +191,10 @@ data/prices_10y.csv     frozen sample: 2512 closes, 2016-07-19 to 2026-07-16
 results/walkforward.csv per-day forecasts for all three models
 ```
 
-## About the repository name
+## Repository name
 
-This started as an option-pricing project, which is where the name and the
-Black-Scholes code come from. `main.jl` still runs that original pipeline: fetch
-prices, estimate historical volatility, price a European call.
-
-That work made the real question obvious — Black-Scholes takes a volatility
-input, and everything then depends on where that number comes from. Forecasting
-it turned out to be the more interesting problem, so the project became a
-volatility study.
-
-The original plan ran to 13 phases and ended in a working paper. It was cut down
-on 2026-08-24 to a single answerable question, because the size of the plan was
-the main thing preventing any of it from being built. Gradient-boosted trees
-were added back on 2026-09-12 as a deliberate, single re-expansion. Other
-tickers, regime analysis, transaction-cost overlays and the paper remain out of
-scope.
-
-The original README and its full 13-phase plan remain in git history:
-
-```sh
-git show a2e458a:README.md
-```
-
-Scope decisions and conventions live in `CLAUDE.md`.
+The name reflects where this started: an option-pricing pipeline. `main.jl`
+still runs that original code — fetch prices, estimate historical volatility,
+price a European call with Black-Scholes. Black-Scholes takes a volatility
+input, and everything downstream depends on where that number comes from —
+which is the question this repo now answers.
