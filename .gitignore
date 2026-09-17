@@ -1,3 +1,33 @@
-# Kept locally, deliberately not published. The original README and its
-# 13-phase plan remain retrievable from history: git show a2e458a:README.md
-docs/original-plan.md
+# Local working notes, deliberately not published.
+#   - original-plan.md: the pre-2026-09-13 README and its 13-phase plan.
+#     Still retrievable from history: git show a2e458a:README.md
+#   - writeup.{md,tex,pdf}: the parked SSRN paper, out of scope (see CLAUDE.md).
+docs/
+
+# LaTeX build artifacts. Nothing under docs/ is published, so these are
+# belt-and-braces in case the writeup is ever built elsewhere in the tree.
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.toc
+*.fls
+*.fdb_latexmk
+missfont.log
+
+# Agent and editor config, machine-specific.
+.claude/
+CLAUDE.md
+
+# Scratch script for the Yahoo fetch path; not part of the study.
+test_fetch.jl
+
+# Julia coverage and allocation output.
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+
+# OS / editor noise.
+.DS_Store
+*~
+*.swp
