@@ -121,7 +121,7 @@ function main()
     println("QLIKE favours : $qlike_winner")
     println("MSE favours   : $mse_winner")
     if qlike_winner != mse_winner
-        println("The two losses DISAGREE on the winner. Per CLAUDE.md that is a finding,")
+        println("The two losses DISAGREE on the winner. That is a finding,")
         println("not an inconvenience, and it gets its own paragraph in the README.")
     end
 
