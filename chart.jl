@@ -1,9 +1,9 @@
-# Forecast vs realized variance over the walk-forward test period.
-# Run with:  julia --project=. chart.jl
-#
-# Reads results/walkforward.csv, so it re-renders without refitting anything.
-# Raw SVG rather than a plotting package -- not worth the dependency tree for one
-# static chart. Log y-axis because realized variance spans ~20x here.
+#forecast vs realized variance over the walk-forward test period.
+#run with:  julia --project=. chart.jl
+#reads results/walkforward.csv so it redraws without refitting anything.
+#writing the svg by hand instead of pulling in a plotting package, a whole dependency
+#tree isnt worth it for one static chart. y axis is log because realized variance
+#spans about 20x over this period.
 
 using CSV
 using DataFrames
@@ -29,7 +29,7 @@ const C_AXIS = "#9A9A9A"
 const C_TEXT = "#222222"
 const C_MUTED = "#666666"
 
-# Labels only -- axis, data and scoring are all in variance.
+#labels only, the axis and the data and the scoring are all still in variance.
 ann_vol(v) = sqrt(v / H * 252)
 
 esc(s) = replace(string(s), "&" => "&amp;", "<" => "&lt;", ">" => "&gt;")
@@ -46,7 +46,7 @@ function main()
     isempty(d) && error("nothing to plot: no rows with a target and both forecasts")
 
     days = Vector{Int}(d.day)
-    # returns[i] is the return earned on prices.date[i+1] -- diff() drops one row.
+    #returns[i] is the return earned on prices.date[i+1], since diff() drops a row.
     dates = prices.date[days .+ 1]
 
     realized = Vector{Float64}(d.realized)

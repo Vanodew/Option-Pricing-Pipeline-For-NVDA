@@ -133,10 +133,9 @@ end
 # Recursion and likelihood
 # =============================================================================
 
-# Internal, generic in the parameter type so ForwardDiff duals pass through
-# during the BFGS polish. Returns a bare vector; the public wrapper tags it.
-
-#calculates local variance path
+#calculates local variance path. kept generic in the parameter type so ForwardDiff duals
+#pass through during the BFGS polish, and it returns a plain vector, the public wrapper
+#below is what tags it as a ConditionalVariance.
 function _variance_path(returns::AbstractVector{<:Real}, omega::Real, alpha::Real,
                         beta::Real, mu::Real, seed::Real)
     n = length(returns)
@@ -166,8 +165,7 @@ function garch11_variance_path(
     return ConditionalVariance(_variance_path(returns, omega, alpha, beta, mu, seed))
 end
 
-# Internal: per-observation log-likelihood contributions, generic in T.
-#in essence 
+#per-observation loglik contributions, generic in T for the same reason as above
 function _logliks(returns::AbstractVector{<:Real}, omega::Real, alpha::Real,
                   beta::Real, mu::Real, seed::Real)
     h = _variance_path(returns, omega, alpha, beta, mu, seed)
@@ -210,29 +208,18 @@ end
 # =============================================================================
 
 # --- unconstrained reparameterization ----------------------------------------
-#
-# The MLE must satisfy omega > 0, alpha >= 0, beta >= 0, alpha + beta < 1. A
-# box-constrained optimizer handles the first three but not the sum, and
-# solutions sit close enough to alpha + beta = 1 that an unconstrained
-# optimizer walks straight out of the valid region.
-#
-# So optimize over an unconstrained theta in R^4 that maps *onto* the valid
-# region and nowhere else:
-#
-#   omega = exp(theta_1)                          > 0
-#   p     = logistic(theta_2)                     in (0, 1)   persistence
-#   s     = logistic(theta_3)                     in (0, 1)   alpha's share
-#   alpha = p * s,  beta = p * (1 - s)            alpha + beta = p < 1
-#   mu    = theta_4                               unrestricted
-#
-# Splitting into persistence and share (rather than transforming alpha and
-# beta separately) is what makes the sum constraint automatic. The MLE is
-# invariant to reparameterization, so the fitted coefficients are the same
-# ones a constrained optimizer would find.
-#
-# Standard errors, however, are NOT invariant, which is why the covariance
-# below is computed in the natural (omega, alpha, beta, mu) space rather than
-# in theta space.
+
+#the fit has to satisfy omega>0, alpha>=0, beta>=0 and alpha+beta<1. a box constrained
+#optimizer handles the first three but it cant express the sum one, and the solution sits
+#close enough to alpha+beta=1 that an unconstrained optimizer walks straight out of the
+#valid region. so optimize over theta in R^4 instead and map it onto that region and
+#nowhere else: omega = exp(theta1), p = logistic(theta2) is the persistence in (0,1),
+#s = logistic(theta3) is alpha's share of it, then alpha = p*s and beta = p*(1-s) so
+#alpha+beta = p < 1 for free. splitting it into persistence and share is what does that,
+#transforming alpha and beta separately would not. the MLE is invariant to
+#reparameterization so the fitted coefficients are the same ones a constrained optimizer
+#would land on. standard errors are NOT invariant though, which is why the covariance
+#further down is computed in normal (omega, alpha, beta, mu) space and not in theta space.
 
 _logistic(x) = 1 / (1 + exp(-x))
 _logit(x) = log(x / (1 - x))
@@ -284,23 +271,21 @@ end
 Base.show(io::IO, f::GARCH11Fit) = show(io, MIME"text/plain"(), f)
 
 # --- numerical derivatives ----------------------------------------------------
-#
-# Finite differences rather than autodiff, so the covariance is derived from
-# the likelihood as written rather than inheriting the same code path twice.
-# Step sizes are relative to each parameter, which matters here because the
-# four parameters differ by four orders of magnitude (omega ~ 1e-5, beta ~ 1).
-#
-# The exponents are the standard bias/round-off optima: for a central FIRST
-# difference the truncation error is O(h^2) and the round-off O(eps/h), which
-# balance at h ~ eps^(1/3); for a central SECOND difference the round-off is
-# O(eps/h^2) and they balance at h ~ eps^(1/4).
+
+#finite differences rather than autodiff, so the covariance is derived from the likelihood
+#as written instead of inheriting the same code path twice. step sizes are relative to each
+#parameter, which matters because the four of them differ by about four orders of magnitude
+#(omega ~ 1e-5, beta ~ 1) so one fixed step would be useless for at least one of them.
+#the exponents are just the standard bias vs round-off optima: a central first difference
+#has truncation error O(h^2) and round-off O(eps/h), which balance at h ~ eps^(1/3), and a
+#central second difference has round-off O(eps/h^2) so those balance at h ~ eps^(1/4).
 
 _step(x, rel) = rel * max(abs(x), 1e-8)
 
 const _SCORE_REL = cbrt(eps(Float64))          # ~6.1e-6
 const _HESS_REL = eps(Float64)^0.25            # ~1.2e-4
 
-# Per-observation score matrix S (n x 4): S[t, i] = d l_t / d x_i.
+#per-observation score matrix S (n x 4), where S[t, i] = d l_t / d x_i.
 function _score_matrix(f, x::Vector{Float64})
     n = length(f(x))
     S = Matrix{Float64}(undef, n, 4)
@@ -313,7 +298,7 @@ function _score_matrix(f, x::Vector{Float64})
     return S
 end
 
-# Hessian of the total log-likelihood by central second differences.
+#hessian of the total log-likelihood, by central second differences.
 function _hessian(g, x::Vector{Float64})
     H = Matrix{Float64}(undef, 4, 4)
     hs = [_step(x[i], _HESS_REL) for i in 1:4]
@@ -380,7 +365,7 @@ function fit_garch11(
     params = GARCH11Params(omega, alpha, beta, mu)
     x = [omega, alpha, beta, mu]
 
-    # Covariance in the natural parameter space.
+    #covariance in the natural parameter space.
     logliks_at = z -> _logliks(r, z[1], z[2], z[3], z[4], seed)
     total_at = z -> sum(logliks_at(z))
 

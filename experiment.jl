@@ -1,9 +1,7 @@
-# Walk-forward experiment: EWMA vs GARCH(1,1) vs GBT on NVDA's 21-day realized
-# variance.
-# Run with:  julia --project=. experiment.jl
-#
-# Reads the frozen CSV directly, not through DataFetch -- that points at a
-# different cache path and can hit the network.
+#walk-forward experiment, EWMA vs GARCH(1,1) vs GBT on NVDA's 21-day realized variance.
+#run with:  julia --project=. experiment.jl
+#reads the frozen csv directly rather than going through DataFetch, that one points at a
+#different cache path and can end up hitting the network.
 
 include("src/volatility.jl")
 include("src/realized_vol.jl")
@@ -33,7 +31,8 @@ const H = 21            # forecast horizon, trading days -- the project conventi
 const MIN_TRAIN = 1000  # ~4 years before the first forecast is made
 const TEST_SIZE = 21    # refit monthly; also the embargo length
 
-# Mask is passed in, not derived here, so every model is scored on the same days.
+#the mask gets passed in rather than worked out here, so every model is scored on the
+#exact same days.
 function score_column(realized, forecast, mask)
     rv = collect(skipmissing(realized[mask]))
     fc = collect(skipmissing(forecast[mask]))
@@ -45,7 +44,7 @@ function score_column(realized, forecast, mask)
     )
 end
 
-# Reporting only -- fitting and scoring stay in variance.
+#reporting only, the fitting and scoring stay in variance.
 ann_vol(total_var_h) = sqrt(total_var_h / H * 252)
 
 fmt(x; d=6) = string(round(x, sigdigits=d))
@@ -70,7 +69,7 @@ function main()
         output_path = OUT_PATH,
     )
 
-    # A day any model is missing is dropped for all of them.
+    #if any model is missing a day then that day gets dropped for all of them.
     has_target = .!ismissing.(results.realized)
     has_all = .!ismissing.(results.ewma_hstep) .&
               .!ismissing.(results.garch_hstep) .&

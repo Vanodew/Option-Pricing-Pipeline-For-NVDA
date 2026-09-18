@@ -11,7 +11,7 @@ using EvoTrees
 
 export walkforward_splits, walk_forward
 
-# Fixed in advance, never tuned against the test period.
+#fixed up front, never tuned against the test period.
 const GBT_NROUNDS = 200
 const GBT_ETA = 0.05
 const GBT_MAX_DEPTH = 4
@@ -76,7 +76,8 @@ function walk_forward(
         lambda = lambda
     )
 
-    # Causal row by row -- check (w) -- so building once over the sample is safe.
+    #each row is causal, thats what check (w) shows, so building this once over the whole
+    #sample is safe.
     gbt_ok = n >= maximum(feature_windows)
     feats = gbt_ok ? build_features(returns; lambda=lambda, windows=feature_windows) : nothing
 
@@ -126,8 +127,8 @@ function walk_forward(
             h0_window = train_end
         )) : nothing
 
-        # Trains on log(target); exp() brings it back, which biases predictions
-        # low. Left uncorrected -- the README reports the bias.
+        #trains on log(target) and exp() brings it back, which biases the predictions low.
+        #left uncorrected on purpose, the README says so.
         gbt_pred = Dict{Int,Float64}()
         if gbt_ok
             train_rows = [t for t in 1:train_end

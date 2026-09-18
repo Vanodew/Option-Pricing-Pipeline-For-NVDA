@@ -80,9 +80,9 @@ function dm_test(loss_a, loss_b; q::Union{Nothing,Int}=nothing, h::Int=21)::DMRe
     dbar = mean(d)
     S = newey_west_lrv(d, bandwidth)
 
-    # S == 0 means a constant differential. Identical models are a real answer;
-    # a constant nonzero gap is a wiring fault, and reporting "no difference"
-    # for a model that loses every day would be worse than failing.
+    #S == 0 means the differential is constant. two identical models is a real answer, but a
+    #constant nonzero gap means something is wired wrong, and saying "no difference" about a
+    #model that loses every single day would be worse than just failing here.
     if S <= 0.0
         dbar == 0.0 && return DMResult(dbar, S, 0.0, 0.0, 1.0, 0.0, 1.0, T, bandwidth)
         error("Degenerate test: loss differential is constant at $dbar, so its " *
